@@ -90,12 +90,81 @@ fine-tuned Enformer land in the same place.
 5. Only the 2021–2023 model generation is covered. Whether Borzoi or AlphaGenome still
    has this is untested here.
 
-## Next
+## Round 2: the sign is **not** correctable post hoc — and the AUC said otherwise
 
-Is the sign **predictable** from features available at test time (lead-eQTL distance,
-MAF, local sequence context, the model's own attributions)? If a flip classifier beats
-AUC 0.55 on held-out chromosomes, it is a post-hoc sign correction that needs no
-retraining. If it does not, that line is dead. Either way it is a small experiment.
+The obvious follow-up was pre-registered above: train a flip classifier, bar at
+AUC 0.55 on held-out chromosomes. It was run. **The bar was cleared and the method
+still failed**, which is the more useful result.
+
+![round 2](results/figure_round2.png)
+
+Leave-one-chromosome-out, features computable without ever seeing the test gene's
+expression (prediction dispersion, reference prediction, cross-architecture agreement):
+
+| target | classifier | LOCO AUC | shuffled-label null | z |
+|---|---|---|---|---|
+| Enformer | logistic | **0.578** | 0.490 ± 0.022 | +3.97 |
+| Enformer | hist-GBM | 0.554 | 0.498 ± 0.016 | +3.57 |
+| Basenji2 | logistic | 0.556 | 0.486 ± 0.018 | +4.04 |
+
+Adding the lead-eQTL annotation (distance, MAF, strength) changes nothing — 0.577 vs
+0.578 — so the signal is entirely in the Y-free features.
+
+Then the end-to-end test, scored by the metric the field reports:
+
+| policy | mean *r* (Enformer) | Δ |
+|---|---|---|
+| baseline | 0.0754 | — |
+| flip where p > 0.5 | 0.0743 | **−0.0011** |
+| flip where p > 0.6 | 0.0751 | −0.0002 |
+| flip where p > 0.7 | 0.0754 | **+0.0000** |
+| keep lowest-50 % p | **0.1073** | **+0.0319** |
+| sign oracle (bound) | 0.2161 | +0.1407 |
+
+**Flipping gains nothing.** The reason is in panel C: across quintiles of predicted
+flip probability the flip rate rises 0.260 → 0.419 and **never crosses 0.5**, while
+mean |*r*| falls 0.254 → 0.188. No group of genes is reliably *inverted*; the
+classifier only finds genes where the model is closer to a coin flip. Negating a group
+that is 42 % flipped makes it 58 % flipped.
+
+So: an AUC significantly above its own shuffled-label null, and zero usable gain. The
+discriminable quantity was *unreliability*, not *direction*. **The sign error is not a
+systematic bias with a cheap post-hoc fix — it has to be addressed in training**,
+which is consistent with it being shared across architectures.
+
+### What did survive: Y-free reliability triage
+
+Ranking genes by the same score and keeping the most reliable half raises Enformer's
+mean *r* from 0.0754 to 0.1073 (**+42 %**) and Basenji2's from 0.0647 to 0.0916
+(+42 %), against a random-50 % null of 0.0754 ± 0.0058 (z = +5.7). You can tell in
+advance, with no expression data, which genes the model's personal-genome prediction
+is worth trusting.
+
+A single feature does as well as the trained classifier, and the ranking is odd:
+
+| triage score for **Enformer** | mean *r* kept | Δ | z |
+|---|---|---|---|
+| **ExPecto** prediction dispersion | 0.1085 | +0.0331 | +5.70 |
+| ExPecto IQR | 0.1068 | +0.0314 | +5.42 |
+| Enformer–Basenji2 agreement | 0.1027 | +0.0273 | +4.71 |
+| Basenji2 dispersion | 0.1017 | +0.0263 | +4.53 |
+| *Enformer's own dispersion* | 0.0932 | +0.0178 | +3.07 |
+
+**A different model's dispersion predicts Enformer's reliability better than
+Enformer's own does.** Xpresso-derived features are useless or harmful, matching its
+chance-level sign accuracy. Caveat: in the per-feature table a couple of degenerate
+folds leave one row (`*_nuniq`) with no split; nothing is drawn from those rows.
+
+### Next
+
+The remaining honest route needs the model in the loop rather than its outputs: take
+an *external* cis-eQTL map (GTEx, eQTLGen — independent of the target cohort), run the
+model on both alleles of the lead variant, and align the model's own response
+direction to the external effect direction. That fixes the sign without ever touching
+the target cohort's expression. It needs genotypes and GPU inference, unlike
+everything here.
+
+Also untested: whether Borzoi / Flashzoi / AlphaGenome still have the sign problem.
 
 ## Reproducing
 
@@ -111,6 +180,10 @@ python -I scripts/02_ancestry_control.py $P g1k.ped $R 100
 python -I scripts/03_mechanism.py        $P $D/eqtl_features.csv $R
 python -I scripts/04_locus_swap.py       $P $D/gene_list.csv $D/eqtl_features.csv $R 30
 python -I scripts/05_summary_figure.py   $R
+python -I scripts/06_flip_classifier.py       $P $D/gene_list.csv $D/eqtl_features.csv $R
+python -I scripts/07_does_correction_help.py  $P $D/gene_list.csv $R
+python -I scripts/08_triage.py                $P $D/gene_list.csv $R
+python -I scripts/09_round2_figure.py         $R
 ```
 
 Predictions, ground truth and the eQTL annotation all ship inside the upstream repo.
